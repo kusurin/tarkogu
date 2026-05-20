@@ -12,6 +12,8 @@ python = ">=3.10"
 requests = "*"
 pandas = "*"
 prophet = "=1.3.0"
+fastapi = "*"
+uvicorn = "*"
 
 
 # tmp

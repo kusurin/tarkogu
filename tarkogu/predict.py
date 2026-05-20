@@ -3,8 +3,17 @@ import pandas as pd
 import numpy as np
 from prophet import Prophet
 
-def predict_price_and_offer_count(id, ref_days, predict_hours,  return_details=False):
-    price_df = fetch_item_historical_price(id, ref_days)
+def predict_price_and_offer_count(id, ref_days, predict_hours,  return_details=False, price_df=None):
+    if price_df is None:
+        price_df = fetch_item_historical_price(id, ref_days)
+    else:
+        price_df = price_df.copy()
+
+    if price_df.empty:
+        raise ValueError(f"No price data available for {id}")
+
+    if "time" not in price_df.columns and "timestamp" in price_df.columns:
+        price_df["time"] = pd.to_datetime(price_df["timestamp"], unit="ms", utc=True).dt.tz_convert(None)
 
     price_df.rename(columns={'time': 'ds', 'priceMin': 'y'}, inplace=True)
 
@@ -112,9 +121,9 @@ def find_buy_times(price_forecast):
     
     price_forecast['should_buy'] = price_forecast['max_follow_diff'] >= 10000
 
-    range = price_forecast['max_follow_diff'].max()
+    buy_range = price_forecast['max_follow_diff'].max()
 
-    return price_forecast[price_forecast['should_buy']]['price_ds'].tolist(), range
+    return price_forecast[price_forecast['should_buy']]['price_ds'].tolist(), buy_range
 
 
 # 当时价格和预测价格中，前24h内有价格小于其超过10000的时间点卖出
@@ -141,6 +150,6 @@ def find_sell_times(price_forecast, previous_ref_hours=24):
 
     price_forecast['should_sell'] = price_forecast['max_previous_diff'] >= 10000
 
-    range = price_forecast['max_previous_diff'].max()
+    sell_range = price_forecast['max_previous_diff'].max()
 
-    return price_forecast[price_forecast['should_sell']]['price_ds'].tolist(), range
+    return price_forecast[price_forecast['should_sell']]['price_ds'].tolist(), sell_range
