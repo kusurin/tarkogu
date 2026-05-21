@@ -6,8 +6,6 @@ from prophet import Prophet
 def predict_price_and_offer_count(id, ref_days, predict_hours,  return_details=False, price_df=None):
     if price_df is None:
         price_df = fetch_item_historical_price(id, ref_days)
-    else:
-        price_df = price_df.copy()
 
     if price_df.empty:
         raise ValueError(f"No price data available for {id}")

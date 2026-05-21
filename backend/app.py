@@ -183,6 +183,9 @@ async def update_loop():
 
                     price_window = res[(res["price_ds"] >= window_start) & (res["price_ds"] <= window_end)]
                     price_series = serialize_time_series(price_window, "price_ds", "price_yhat")
+                    print(price_df.columns) 
+                    price_df = price_df[price_df["ds"] >= now - pd.Timedelta(hours=24)]
+                    historical_price_series = serialize_time_series(price_df, "ds", "y")
 
                     offer_mean_24h = mean_offer_next_24h(res, "offer_ds", "offer_yhat", now)
 
@@ -198,6 +201,7 @@ async def update_loop():
                         "rmse": rmse,
                         "buy_time": serialize_time_list(buy_time),
                         "sell_time": serialize_time_list(sell_time),
+                        "historical_price_series": historical_price_series,
                         "price_yhat_series": price_series,
                         "offer_yhat_mean_24h": offer_mean_24h,
                         "updated_at": datetime.now(timezone.utc).isoformat(),
