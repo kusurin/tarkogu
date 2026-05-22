@@ -179,13 +179,13 @@ async def update_loop():
                     category = item_meta["category"] if item_meta is not None and "category" in item_meta else None
 
                     now = pd.Timestamp.now(timezone.utc).tz_localize(None)
-                    window_start = now - pd.Timedelta(hours=24)
+                    window_start = now - pd.Timedelta(hours=48)
                     window_end = now + pd.Timedelta(hours=24)
 
                     price_window = res[(res["price_ds"] >= window_start) & (res["price_ds"] <= window_end)]
                     price_series = serialize_time_series(price_window, "price_ds", "price_yhat")
                     print(price_df.columns) 
-                    price_df = price_df[price_df["ds"] >= now - pd.Timedelta(hours=24)]
+                    price_df = price_df[price_df["ds"] >= now - pd.Timedelta(hours=48)]
                     historical_price_series = serialize_time_series(price_df, "ds", "y")
 
                     offer_mean_24h = mean_offer_next_24h(res, "offer_ds", "offer_yhat", now)

@@ -20,14 +20,14 @@ def predict_price_and_offer_count(id, ref_days, predict_hours,  return_details=F
 
     offer_model = Prophet()
     offer_model.fit(offer_df[['ds', 'y']])
-    offer_future = offer_model.make_future_dataframe(periods=predict_hours, freq='h')
+    offer_future = offer_model.make_future_dataframe(periods=predict_hours, freq='2h')
     offer_forecast = offer_model.predict(offer_future)
 
     # Predict price
     price_model = Prophet()
     price_model.add_regressor('offerCount')
     price_model.fit(price_df[['ds', 'y', 'offerCount']])
-    price_future = price_model.make_future_dataframe(periods=predict_hours, freq='h')
+    price_future = price_model.make_future_dataframe(periods=predict_hours, freq='2h')
     offer_regressor = offer_forecast[['ds', 'yhat']].rename(columns={'yhat': 'offerCount'})
     price_future = price_future.merge(offer_regressor, on='ds', how='left')
 
@@ -72,14 +72,14 @@ def predict_price_and_offer_count_test(id, ref_days, predict_hours,  return_deta
 
     offer_model = Prophet()
     offer_model.fit(offer_df_train[['ds', 'y']])
-    offer_future = offer_model.make_future_dataframe(periods=predict_hours, freq='h')
+    offer_future = offer_model.make_future_dataframe(periods=predict_hours, freq='2h')
     offer_forecast = offer_model.predict(offer_future)
 
     # Predict price
     price_model = Prophet()
     price_model.add_regressor('offerCount')
     price_model.fit(price_df_train[['ds', 'y', 'offerCount']])
-    price_future = price_model.make_future_dataframe(periods=predict_hours, freq='h')
+    price_future = price_model.make_future_dataframe(periods=predict_hours, freq='2h')
     offer_regressor = offer_forecast[['ds', 'yhat']].rename(columns={'yhat': 'offerCount'})
     price_future = price_future.merge(offer_regressor, on='ds', how='left')
 
