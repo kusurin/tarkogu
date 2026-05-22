@@ -15,7 +15,7 @@ from tarkogu.get_data import get_item_metadata, refresh_item_historical_price_ca
 from tarkogu.predict import predict_price_and_offer_count, find_buy_times, find_sell_times
 from tarkogu.utils import get_pkg_abs_path
 
-PRED_CATEGORIES = {'Barter item'}
+PRED_CATEGORIES = {'Barter item', 'Item', 'Food and drink', 'Key', 'Equipment'}
 REF_DAYS = 14
 PREDICT_HOURS = 24
 
@@ -31,7 +31,7 @@ app.add_middleware(
 
 CACHE_PATH = Path(get_pkg_abs_path()) / "data" / "rankings_cache.json"
 
-W_SORT = {"buy_range": 0.5, "sell_range": 0.5, "rmse": -1.0}
+W_SORT = {"buy_range": 0.5, "sell_range": 0, "rmse": -2.0}
 
 DEFAULT_CACHE = {"updated_at": None, "items": []}
 NUMERIC_FIELDS = {"score", "buy_range", "sell_range", "rmse", "offer_yhat_mean_24h"}
@@ -137,7 +137,6 @@ async def update_loop():
         try:
             meta_df = get_item_metadata()
             meta_df = meta_df[meta_df["category"].isin(PRED_CATEGORIES)]
-            meta_df = meta_df[:4]
 
             items = meta_df.index.tolist()
             if not items:
@@ -165,10 +164,12 @@ async def update_loop():
                     buy_time, buy_range = find_buy_times(res)
                     sell_time, sell_range = find_sell_times(res)
 
+                    correct_factor = 1 / res["price_yhat"].mean()
+
                     score = (
-                        W_SORT["buy_range"] * buy_range +
-                        W_SORT["sell_range"] * sell_range +
-                        W_SORT["rmse"] * rmse
+                        W_SORT["buy_range"] * buy_range * correct_factor +
+                        W_SORT["sell_range"] * sell_range * correct_factor +
+                        W_SORT["rmse"] * rmse * correct_factor
                     )
 
                     item_meta = meta_df.loc[item_id] if item_id in meta_df.index else None
