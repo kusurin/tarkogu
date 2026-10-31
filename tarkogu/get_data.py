@@ -1,97 +1,60 @@
 import requests
 import pandas as pd
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from tarkogu.utils import get_pkg_abs_path
 
 INT_MAX = 2**31 - 1
 
-API_URL = "https://api.tarkov.dev/graphql"
+JSON_API_URL = "https://json.tarkov.dev/regular"
 UPDATE_INTERVAL = 1000 * 60 * 60 * 2 # 2 hours
 MS_IN_DAY = 1000 * 60 * 60 * 24
 CURRENT_DIR = get_pkg_abs_path()
+(CURRENT_DIR / "data").mkdir(parents=True, exist_ok=True)
+
+def get_json(endpoint):
+    response = requests.get(f"{JSON_API_URL}/{endpoint}", timeout=60)
+    response.raise_for_status()
+    return response.json()['data']
+
 
 def get_item_metadata():
     if os.path.exists(CURRENT_DIR / "data" / "items_metadata.csv"):
         return pd.read_csv(CURRENT_DIR / "data" / "items_metadata.csv", index_col=0, header=0)
-    query = """
-    query {
-        items(lang: en) {
-            id
-            name
-            iconLink
-            category {
-                name
-                parent {
-                    name
-                }
-            }
-        }
-    }"""
-
-    response = requests.post(API_URL, json={'query': query})
-    data = response.json()
-
-    meta_df = pd.DataFrame(data['data']['items'])
-    meta_df['category'] = meta_df['category'].apply(lambda x: x['parent']['name'])
-
-    # zh
-    query = """
-    query {
-        items(lang: zh) {
-            id
-            name
-        }
-    }"""
-
-    response = requests.post(API_URL, json={'query': query})
-    data = response.json()
-
-    meta_df['name_zh'] = meta_df['id'].map({item['id']: item['name'] for item in data['data']['items']})
-
-    meta_df.to_csv('data/items_metadata.csv', index=False, header=True)
+    # The legacy GraphQL endpoint is unavailable; the official JSON API
+    # publishes item/category dictionaries and separate localization tables.
+    data = get_json('items')
+    names_en = get_json('items_en')
+    names_zh = get_json('items_zh')
+    categories = data['itemCategories']
+    records = []
+    for item in data['items'].values():
+        category_ids = item.get('categories') or []
+        category = categories.get(category_ids[0], {}) if category_ids else {}
+        parent = categories.get(category.get('parent'), {}) or category
+        name_key = item.get('name', '')
+        records.append({
+            'id': item['id'],
+            'name': names_en.get(name_key, item.get('normalizedName', name_key)),
+            'name_zh': names_zh.get(name_key, names_en.get(name_key, name_key)),
+            'iconLink': item.get('iconLink'),
+            'category': names_en.get(parent.get('name'), ''),
+        })
+    meta_df = pd.DataFrame(records).set_index('id')
+    meta_df.to_csv(CURRENT_DIR / 'data' / 'items_metadata.csv', header=True)
     return meta_df
 
 
 def get_item_historical_price(id, days, limit = INT_MAX, offset = 0):
-    query = """
-    query ($id: ID!, $days: Int!, $limit: Int!, $offset: Int!) {
-        historicalItemPrices(id: $id, days: $days, limit: $limit, offset: $offset) {
-            price
-            priceMin
-            offerCount
-            timestamp
-        }
-    }"""
-
-    response = requests.post(API_URL, json={'query': query, 'variables': {'id': id, 'days': int(days), 'limit': int(limit), 'offset': int(offset)}})
-    data = response.json()
-
-    price_df = pd.DataFrame(data['data']['historicalItemPrices'])
-
-    if not price_df.empty:
-        price_df['timestamp'] = price_df['timestamp'].astype('int64')
-        price_df['offerCount'] = price_df['offerCount'].astype('int64')
-        price_df['time'] = pd.to_datetime(price_df['timestamp'], unit='ms')
-
-    return price_df
-
-def _build_historical_price_batch_query(item_ids, days, limit, offset):
-    alias_map = {}
-    lines = ["query {"]
-    for idx, item_id in enumerate(item_ids):
-        alias = f"item_{idx}"
-        alias_map[alias] = item_id
-        lines.append(
-            f'  {alias}: historicalItemPrices(id: "{item_id}", days: {int(days)}, limit: {int(limit)}, offset: {int(offset)}) {{'
-        )
-        lines.append("    price")
-        lines.append("    priceMin")
-        lines.append("    offerCount")
-        lines.append("    timestamp")
-        lines.append("  }")
-    lines.append("}")
-    return "\n".join(lines), alias_map
+    price_df = pd.DataFrame(get_json(f'prices/{id}'))
+    required = ['timestamp', 'price', 'priceMin', 'offerCount']
+    if price_df.empty or any(column not in price_df for column in required):
+        return pd.DataFrame()
+    price_df = _normalize_price_df(price_df).dropna(subset=required)
+    start = pd.Timestamp.now(tz='UTC').timestamp() * 1000 - days * MS_IN_DAY - UPDATE_INTERVAL
+    price_df = price_df[price_df['timestamp'] >= start].sort_values('timestamp', ascending=False)
+    return price_df.iloc[int(offset):int(offset) + int(limit)].sort_values('timestamp').copy()
 
 def _normalize_price_df(price_df):
     df = price_df.copy()
@@ -156,24 +119,15 @@ def get_items_historical_price_batch(item_ids, days, limit=INT_MAX, offset=0):
     if not item_ids:
         return {}
 
-    query, alias_map = _build_historical_price_batch_query(item_ids, days, limit, offset)
-    response = requests.post(API_URL, json={"query": query})
-    data = response.json()
+    def fetch(item_id):
+        try:
+            return item_id, get_item_historical_price(item_id, days, limit, offset)
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            print(f'History unavailable for {item_id}: {exc}', flush=True)
+            return item_id, pd.DataFrame()
 
-    if "errors" in data:
-        print(data["errors"])
-
-    results = {}
-    payload = data.get("data", {})
-
-    for alias, item_id in alias_map.items():
-        records = payload.get(alias, [])
-        price_df = pd.DataFrame(records)
-        if not price_df.empty:
-            price_df = _normalize_price_df(price_df)
-        results[item_id] = price_df
-
-    return results
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        return dict(executor.map(fetch, item_ids))
 
 def refresh_item_historical_price_cache(item_ids, ref_days):
     current_timestamp = pd.Timestamp.now(tz="UTC").timestamp() * 1000

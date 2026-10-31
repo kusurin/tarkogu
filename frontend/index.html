@@ -3,8 +3,6 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-        <script src="./tarkogu.js"></script>
-        <link rel="stylesheet" href="./tarkogu.css" />
 		<title>Tarkogu</title>
         <style>
 :root {
@@ -79,28 +77,221 @@ input:focus {
     color: var(--font-color);
 }
 
+.item-card {
+    margin: 12px 20px;
+    padding: 10px 12px;
+    border: 1px solid var(--widget-border);
+    background-color: rgba(0, 0, 0, 0.2);
+}
+
+.item-card:hover {
+    border-color: var(--widget-border-hover);
+}
+
+.item-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.item-title {
+    margin: 0;
+    font-size: 1.4rem;
+    flex: 1;
+}
+
+.pin-button {
+    background: transparent;
+    border: 1px solid var(--widget-border);
+    color: var(--font-color);
+    padding: 0.2rem 0.5rem;
+    font-size: 1rem;
+    cursor: pointer;
+}
+
+.pin-button:hover {
+    border-color: var(--widget-border-hover);
+    color: var(--focus);
+}
+
+.pin-button[data-pinned="true"] {
+    border-color: var(--focus);
+    color: var(--focus);
+}
+
+.pagination {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 12px 20px;
+    color: var(--font-color);
+}
+
+.pagination button, .pagination select, #retry-button {
+    background: var(--bg);
+    color: var(--font-color);
+    border: 1px solid var(--widget-border);
+    padding: 0.5rem 0.8rem;
+    font: inherit;
+    cursor: pointer;
+}
+
+button:disabled { opacity: 0.4; cursor: default; }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--focus); }
+#status { margin: 12px 20px; color: var(--font-color); }
+#retry-button { margin: 0 20px 12px; }
+
 
         </style>
 	</head>
 	<body>
         <div id="main-container">
             <div id="search-tool">
-                <input type="text" id="search-input" placeholder="过滤物品" />
+                <input type="search" id="search-input" placeholder="搜索全部物品" aria-label="搜索物品" maxlength="200" />
                 <div class="frosted"></div>
             </div>
+            <nav class="pagination" aria-label="物品分页">
+                <button type="button" data-page="previous" disabled>上一页</button>
+                <span class="page-info" aria-live="polite"></span>
+                <button type="button" data-page="next" disabled>下一页</button>
+                <label>每页 <select id="page-size"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select> 件</label>
+            </nav>
+            <p id="status" role="status" aria-live="polite"></p>
+            <button type="button" id="retry-button" hidden>重试</button>
             <div id="content">
                 
             </div>
+            <nav class="pagination" aria-label="底部分页">
+                <button type="button" data-page="previous" disabled>上一页</button>
+                <span class="page-info" aria-live="polite"></span>
+                <button type="button" data-page="next" disabled>下一页</button>
+            </nav>
         </div>
 	</body>
     <script>
-        const api_url = 'http://localhost:10999/rankings/';
+        const api_url = '/api/rankings';
         let data = null;
         let resizeObserver = null;
         let lastContentWidth = 0;
         let renderScheduled = false;
         let lastRenderAt = 0;
         let renderThrottleTimer = null;
+        const pinnedStorageKey = 'tarkogu_pinned_items';
+        let pinnedItemKeys = new Set();
+        let filterText = '';
+        let currentPage = 1;
+        let pageSize = 20;
+        let loading = false;
+        let searchTimer = null;
+        let activeRequest = null;
+        let requestVersion = 0;
+
+        function get_item_english_name(item) {
+            if (!item || typeof item !== 'object') return '';
+            return item['name_en'] || item['name_en_us'] || item['name_en_gb'] || item['name'] || '';
+        }
+
+        function get_item_key(item) {
+            if (!item || typeof item !== 'object') return '';
+            const id = item['id'] ?? item['item_id'] ?? item['itemId'];
+            if (id !== undefined && id !== null && id !== '') return `id:${id}`;
+            const nameZh = String(item['name_zh'] || '').trim();
+            const nameEn = String(get_item_english_name(item) || '').trim();
+            if (!nameZh && !nameEn) return '';
+            return `name:${nameZh}|${nameEn}`;
+        }
+
+        function load_pins() {
+            try {
+                const raw = localStorage.getItem(pinnedStorageKey);
+                if (!raw) return;
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    pinnedItemKeys = new Set(parsed.filter(Boolean));
+                }
+            } catch (err) {
+                pinnedItemKeys = new Set();
+            }
+        }
+
+        function save_pins() {
+            try {
+                localStorage.setItem(pinnedStorageKey, JSON.stringify(Array.from(pinnedItemKeys)));
+            } catch (err) {
+                // Ignore storage errors (private mode or quota).
+            }
+        }
+
+        function toggle_pin(key) {
+            if (!key) return;
+            if (pinnedItemKeys.has(key)) {
+                pinnedItemKeys.delete(key);
+            } else {
+                pinnedItemKeys.add(key);
+            }
+            save_pins();
+        }
+
+        function update_pagination() {
+            for (const label of document.querySelectorAll('.page-info')) {
+                label.textContent = data
+                    ? `第 ${data.total_pages ? data.page : 0} / ${data.total_pages} 页 · 共 ${data.total} 件`
+                    : '尚未加载';
+            }
+            for (const button of document.querySelectorAll('[data-page]')) {
+                button.disabled = loading || !data || !(button.dataset.page === 'previous'
+                    ? data.has_previous : data.has_next);
+            }
+            document.getElementById('content').setAttribute('aria-busy', String(loading));
+        }
+
+        async function load_page(page = 1) {
+            clearTimeout(searchTimer);
+            if (activeRequest) activeRequest.abort();
+            const controller = new AbortController();
+            activeRequest = controller;
+            const version = ++requestVersion;
+            currentPage = page;
+            loading = true;
+            // Discard the previous page immediately, so failed searches never
+            // leave unrelated cards under the new search or page controls.
+            data = null;
+            document.getElementById('content').replaceChildren();
+            const status = document.getElementById('status');
+            status.textContent = '正在加载…';
+            document.getElementById('retry-button').hidden = true;
+            update_pagination();
+            const params = new URLSearchParams({page: String(page), page_size: String(pageSize), q: filterText.trim()});
+            for (const key of pinnedItemKeys) params.append('pinned', key);
+            const timeout = setTimeout(() => controller.abort(), 30000);
+            try {
+                const response = await fetch(`${api_url}?${params}`, {signal: controller.signal});
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const json = await response.json();
+                if (!Array.isArray(json.items) || !Number.isInteger(json.total_pages)) {
+                    throw new Error('分页数据格式错误');
+                }
+                if (version !== requestVersion) return;
+                data = json;
+                currentPage = json.page;
+                render();
+                status.textContent = json.total === 0
+                    ? (filterText.trim() ? '没有匹配的物品。' : '暂无行情，等待后台更新。')
+                    : (json.updated_at ? `行情更新：${new Date(json.updated_at).toLocaleString('zh-CN')}` : '');
+            } catch (err) {
+                if (version !== requestVersion) return;
+                status.textContent = controller.signal.aborted
+                    ? '加载超时，请重试。' : `加载失败：${err.message}`;
+                document.getElementById('retry-button').hidden = false;
+            } finally {
+                clearTimeout(timeout);
+                if (version === requestVersion) {
+                    loading = false;
+                    update_pagination();
+                }
+            }
+        }
 
         function schedule_render() {
             if (!data) return;
@@ -148,13 +339,42 @@ input:focus {
         }
 
         document.addEventListener('DOMContentLoaded', function() {
-            fetch(api_url)
-                .then(response => response.json())
-                .then(json => {
-                    data = json;
-                    render();
-                    setup_resize_observer();
+            const searchInput = document.getElementById('search-input');
+            if (searchInput) {
+                filterText = searchInput.value || '';
+                searchInput.addEventListener('input', () => {
+                    filterText = searchInput.value || '';
+                    clearTimeout(searchTimer);
+                    // Invalidate any old request during the debounce window.
+                    requestVersion++;
+                    if (activeRequest) activeRequest.abort();
+                    data = null;
+                    loading = true;
+                    document.getElementById('content').replaceChildren();
+                    document.getElementById('status').textContent = '正在搜索…';
+                    document.getElementById('retry-button').hidden = true;
+                    update_pagination();
+                    searchTimer = setTimeout(() => load_page(1), 300);
                 });
+            }
+
+            load_pins();
+            document.getElementById('page-size').addEventListener('change', event => {
+                pageSize = Number(event.target.value);
+                load_page(1);
+            });
+            for (const button of document.querySelectorAll('[data-page]')) {
+                button.addEventListener('click', () => {
+                    load_page(currentPage + (button.dataset.page === 'previous' ? -1 : 1));
+                    window.scrollTo({top: 0, behavior: 'smooth'});
+                });
+            }
+            document.getElementById('retry-button').addEventListener('click', () => load_page(currentPage));
+            setup_resize_observer();
+            load_page(1);
+            setInterval(() => {
+                if (!loading && data && data.total === 0 && !filterText.trim()) load_page(1);
+            }, 60000);
         });
     </script>
 
@@ -164,17 +384,44 @@ input:focus {
             const content = document.getElementById('content');
             if (!content) return;
             content.innerHTML = '';
-            for (let i = 0; i < data['items'].length; i++) {
+            const items = Array.isArray(data['items']) ? data['items'] : [];
+            for (const item of items) {
+                const itemKey = get_item_key(item);
+                const isPinned = itemKey && pinnedItemKeys.has(itemKey);
                 const item_container = document.createElement('div');
+                item_container.className = 'item-card';
+
+                const item_header = document.createElement('div');
+                item_header.className = 'item-header';
                 
                 const item_title = document.createElement('h2');
-                item_title.textContent = data['items'][i]['name_zh'];
-                item_container.appendChild(item_title);
+                item_title.className = 'item-title';
+                item_title.textContent = (item && item['name_zh']) ? item['name_zh'] : '';
+                item_header.appendChild(item_title);
 
-                const item_image = document.createElement('img');
-                item_image.src = data['items'][i]['icon_link'];
-                item_image.style.width = '2rem';
-                item_container.appendChild(item_image);
+                const pin_button = document.createElement('button');
+                pin_button.type = 'button';
+                pin_button.className = 'pin-button';
+                pin_button.textContent = isPinned ? '取消' : '置顶';
+                pin_button.dataset.pinned = isPinned ? 'true' : 'false';
+                pin_button.disabled = !itemKey;
+                pin_button.addEventListener('click', event => {
+                    event.preventDefault();
+                    toggle_pin(itemKey);
+                    load_page(1);
+                });
+                item_header.appendChild(pin_button);
+
+                item_container.appendChild(item_header);
+
+                const iconLink = item ? item['icon_link'] : '';
+                if (iconLink) {
+                    const item_image = document.createElement('img');
+                    item_image.src = iconLink;
+                    item_image.style.width = '2rem';
+                    item_image.alt = item_title.textContent;
+                    item_container.appendChild(item_image);
+                }
 
                 const item_plot_container = document.createElement('div');
                 item_plot_container.style.width = '80%';
@@ -182,7 +429,6 @@ input:focus {
                 content.appendChild(item_container);
                 item_container.appendChild(item_plot_container);
 
-                const item = data['items'][i];
                 const historical_series = item['historical_price_series'] || [];
                 const yhat_series = item['price_yhat_series'] || [];
                 const reference_series = yhat_series.length > 0 ? yhat_series : historical_series;

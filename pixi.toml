@@ -6,6 +6,7 @@ platforms = ["linux-64"]
 version = "0.1.0"
 
 [tasks]
+serve = "uvicorn backend.app:app --host 127.0.0.1 --port 8080 --workers 1"
 
 [dependencies]
 python = ">=3.10"

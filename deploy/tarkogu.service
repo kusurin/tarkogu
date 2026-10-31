@@ -1,0 +1,30 @@
+[Unit]
+Description=Tarkogu market prediction API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=azureuser
+Group=azureuser
+WorkingDirectory=/srv/tarkogu
+ExecStart=/home/azureuser/.pixi/bin/pixi run --locked serve
+Environment=PYTHONUNBUFFERED=1
+Environment=MPLCONFIGDIR=/tmp/tarkogu-matplotlib
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+MemoryHigh=500M
+MemoryMax=650M
+MemorySwapMax=1536M
+Nice=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/tarkogu
+
+[Install]
+WantedBy=multi-user.target

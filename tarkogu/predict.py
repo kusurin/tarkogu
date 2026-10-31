@@ -2,6 +2,15 @@ from tarkogu.get_data import fetch_item_historical_price
 import pandas as pd
 import numpy as np
 from prophet import Prophet
+from tempfile import TemporaryDirectory
+
+
+def fit_with_temporary_output(model, data):
+    # Prophet stores fitted parameters in memory; keep CmdStan output scoped to
+    # this fit so the long-running update loop cannot exhaust filesystem inodes.
+    with TemporaryDirectory(prefix="tarkogu-fit-") as output_dir:
+        model.fit(data, output_dir=output_dir)
+
 
 def predict_price_and_offer_count(id, ref_days, predict_hours,  return_details=False, price_df=None):
     if price_df is None:
@@ -19,14 +28,14 @@ def predict_price_and_offer_count(id, ref_days, predict_hours,  return_details=F
     offer_df.rename(columns={'offerCount': 'y'}, inplace=True)
 
     offer_model = Prophet()
-    offer_model.fit(offer_df[['ds', 'y']])
+    fit_with_temporary_output(offer_model, offer_df[['ds', 'y']])
     offer_future = offer_model.make_future_dataframe(periods=predict_hours, freq='2h')
     offer_forecast = offer_model.predict(offer_future)
 
     # Predict price
     price_model = Prophet()
     price_model.add_regressor('offerCount')
-    price_model.fit(price_df[['ds', 'y', 'offerCount']])
+    fit_with_temporary_output(price_model, price_df[['ds', 'y', 'offerCount']])
     price_future = price_model.make_future_dataframe(periods=predict_hours, freq='2h')
     offer_regressor = offer_forecast[['ds', 'yhat']].rename(columns={'yhat': 'offerCount'})
     price_future = price_future.merge(offer_regressor, on='ds', how='left')
@@ -71,14 +80,14 @@ def predict_price_and_offer_count_test(id, ref_days, predict_hours,  return_deta
     offer_df_test = offer_df[offer_df['timestamp'] >= train_test_split_time].copy()
 
     offer_model = Prophet()
-    offer_model.fit(offer_df_train[['ds', 'y']])
+    fit_with_temporary_output(offer_model, offer_df_train[['ds', 'y']])
     offer_future = offer_model.make_future_dataframe(periods=predict_hours, freq='2h')
     offer_forecast = offer_model.predict(offer_future)
 
     # Predict price
     price_model = Prophet()
     price_model.add_regressor('offerCount')
-    price_model.fit(price_df_train[['ds', 'y', 'offerCount']])
+    fit_with_temporary_output(price_model, price_df_train[['ds', 'y', 'offerCount']])
     price_future = price_model.make_future_dataframe(periods=predict_hours, freq='2h')
     offer_regressor = offer_forecast[['ds', 'yhat']].rename(columns={'yhat': 'offerCount'})
     price_future = price_future.merge(offer_regressor, on='ds', how='left')
@@ -133,11 +142,11 @@ def find_sell_times(price_forecast, previous_ref_hours=24):
     price_forecast.reset_index(drop=True, inplace=True)
 
     if price_forecast.empty:
-        return []
+        return [], 0.0
 
     last_idx = price_forecast[price_forecast['price_ds'] <= current_time].index[-1]
     if last_idx <= 0:
-        return []
+        return [], 0.0
 
     min_previous = price_forecast.loc[:last_idx, 'price_yhat'].min()
     price_forecast['max_previous_diff'] = 0.0
